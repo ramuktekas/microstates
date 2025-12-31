@@ -27,7 +27,11 @@ from microstates import (
     run_hierarchical_clustering,
     corr_vectors,
 )
-
+from microstates import (
+    MicrostateTemplates,
+    KoenigTemplates,          # or CustoTemplates
+    match_topomaps_per_template,
+)
 # =========================
 # USER CONFIG
 # =========================
@@ -127,103 +131,6 @@ def preprocess_for_gfp_peaks(
 
     return gfp_peaks, gfp_curve
 
-def match_reorder_topomaps(
-    maps_input,
-    maps_sortby,
-    return_correlation=False,
-    return_attribution_only=False,
-):
-    """
-    Find the permutation of maps_input that best matches maps_sortby
-    using absolute spatial correlation.
-    """
-    assert maps_input.shape == maps_sortby.shape, (
-        maps_input.shape,
-        maps_sortby.shape,
-    )
-
-    n_maps = maps_input.shape[0]
-    best_corr_mean = -np.inf
-    best_perm = None
-    best_corr = None
-
-    for perm in permutations(range(n_maps)):
-        corr = np.abs(
-            corr_vectors(
-                maps_sortby,
-                maps_input[list(perm), :],
-                axis=1,
-            )
-        )
-        if corr.mean() > best_corr_mean:
-            best_corr_mean = corr.mean()
-            best_perm = perm
-            best_corr = corr
-
-    if return_attribution_only:
-        if return_correlation:
-            return list(best_perm), best_corr
-        return list(best_perm)
-
-    reordered = maps_input[list(best_perm), :]
-    if return_correlation:
-        return reordered, best_corr
-    return reordered
-
-
-def match_reorder_maps_with_templates(
-    maps,
-    data_ch_names,
-    template_maps,
-    template_ch_names,
-):
-    """
-    Reorder subject microstate maps using templates (Nikola-style).
-
-    Parameters
-    ----------
-    maps : np.ndarray
-        Subject microstate maps (n_states × n_channels)
-    data_ch_names : list[str]
-        Channel names of subject data
-    template_maps : np.ndarray
-        Template maps (n_states × n_template_channels)
-    template_ch_names : list[str]
-        Channel names of template maps
-
-    Returns
-    -------
-    maps_reordered : np.ndarray
-        Full-channel subject maps reordered to match templates
-    attribution : list[int]
-        Permutation corresponding to A/B/C/D
-    """
-    # --- channel intersection (TEMPORARY) ---
-    common, idx_data, idx_template = np.intersect1d(
-        data_ch_names,
-        template_ch_names,
-        return_indices=True,
-    )
-
-    if len(common) == 0:
-        raise RuntimeError("No overlapping channels between data and templates")
-
-    # reduced maps ONLY for matching
-    maps_reduced = maps[:, idx_data]
-    templates_reduced = template_maps[:, idx_template]
-
-    # get permutation ONLY
-    attribution = match_reorder_topomaps(
-        maps_reduced,
-        templates_reduced,
-        return_attribution_only=True,
-    )
-
-    # apply permutation to FULL maps
-    maps_reordered = maps[attribution, :]
-
-    return maps_reordered, attribution
-
 
 
 def plot_microstate_maps(maps, info, subject_id, out_dir):
@@ -254,6 +161,14 @@ def plot_microstate_maps(maps, info, subject_id, out_dir):
 
     print(f"Saved microstate figure → {outpath}")
 
+def subject_maps_to_raw(km_maps, info):
+    """
+    Convert microstate maps (states × channels)
+    into an MNE RawArray (channels × states),
+    where each 'time point' is one microstate.
+    """
+    return mne.io.RawArray(km_maps.T, info, verbose=False)
+
 
 # =========================
 # MAIN PIPELINE
@@ -264,9 +179,9 @@ def process_subject(set_path):
 
     # --- Load EEG ---
     raw = mne.io.read_raw_eeglab(set_path, preload=True, verbose=False)
-    data = raw.get_data()  # channels × time
+    data = raw.get_data()
 
-    # --- PREPROCESS ONLY FOR GFP ---
+    # --- GFP peaks (preprocessing only for peak detection) ---
     gfp_peaks, gfp_curve = preprocess_for_gfp_peaks(
         raw,
         l_freq=1.0,
@@ -274,35 +189,39 @@ def process_subject(set_path):
         use_hilbert=True,
     )
 
-    # --- MICROSTATE MAPS (UNCHANGED SENSOR SPACE) ---
+    # --- Microstate maps in SENSOR SPACE ---
     km_maps = run_modified_k_means(
         data[:, gfp_peaks],
         n_states=N_STATES,
     )  # (states × channels)
 
-    # --- LOAD KOENIG TEMPLATES ---
-    koenig_maps, koenig_chs = load_koenig_templates_from_set(
-        TEMPLATE_FILE,
-        N_STATES,
+    # --- Wrap subject maps as Raw ---
+    subject_maps_raw = subject_maps_to_raw(km_maps, raw.info)
+
+    # --- Load templates ---
+    templates = KoenigTemplates.load(n_states=N_STATES)
+    # or: templates = CustoTemplates.load()
+
+    # --- Match using Nikola’s function ---
+    attribution, corr = match_topomaps_per_template(
+        maps=subject_maps_raw,
+        template=templates,
     )
 
-    # --- MATCH & REORDER (NIKOLA-STYLE) ---
-    km_maps_reordered, attribution = match_reorder_maps_with_templates(
-        maps=km_maps,
-        data_ch_names=raw.info["ch_names"],
-        template_maps=koenig_maps,
-        template_ch_names=koenig_chs,
-    )
+    # --- Apply permutation to FULL maps ---
+    km_maps_labeled = km_maps[attribution, :]
 
-    # --- SAVE ---
+    # --- Save ---
     out_dir = OUT_DIR / subj_id
     out_dir.mkdir(exist_ok=True)
 
     np.save(out_dir / "km_maps.npy", km_maps)
-    np.save(out_dir / "km_maps_reordered.npy", km_maps_reordered)
+    np.save(out_dir / "km_maps_labeled.npy", km_maps_labeled)
     np.save(out_dir / "microstate_permutation.npy", attribution)
+    np.save(out_dir / "template_correlations.npy", corr)
 
-    return km_maps_reordered, raw.info, subj_id, out_dir
+    return km_maps_labeled, raw.info, subj_id, out_dir
+
 
 
 
@@ -333,6 +252,10 @@ if __name__ == "__main__":
         )
 
     print("\nAll subjects processed.")
+
+
+
+
 
 
 
