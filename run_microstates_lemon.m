@@ -30,29 +30,73 @@ function sets = load_lemon_subjects(lemon_dir, n_subjects)
     idx  = randperm(numel(files), n_subjects);
     sets = files(idx);
 end
-function [gfp_peaks, gfp_curve] = preprocess_for_gfp_peaks(EEG, l_freq, h_freq)
-
-    % Bandpass filter
-    EEGf = pop_eegfiltnew(EEG, l_freq, h_freq);
-
-    % Hilbert envelope
-    EEGf.data = abs(hilbert(double(EEGf.data')')) ;
-
-    % data: channels × time
-    data = double(EEGf.data);
-
-    % microstates toolbox
-    ms = microVARstates.microstates();
-
-    [gfp_peaks, gfp_curve] = ms.get_gfp_peaks(data);
-end
 function subject_maps = subject_maps_to_struct(km_maps, EEG)
-
-    subject_maps.data      = km_maps;     % states × channels
-    subject_maps.chanlocs  = EEG.chanlocs;
-    subject_maps.nbchan    = EEG.nbchan;
-    subject_maps.n_states  = size(km_maps, 1);
+    subject_maps.data     = km_maps;     % states × channels
+    subject_maps.chanlocs = EEG.chanlocs;
+    subject_maps.nbchan   = EEG.nbchan;
+    subject_maps.n_states = size(km_maps, 1);
 end
+function [gfp_peaks, gfp_curve, EEG] = preprocess_for_gfp_peaks(EEG, l_freq, h_freq, do_ica)
+%PREPROCESS_FOR_GFP_PEAKS Classical EEGLAB microstate preprocessing
+%
+% Inputs
+%   EEG     : EEGLAB EEG structure
+%   l_freq  : low cutoff frequency (e.g. 1)
+%   h_freq  : high cutoff frequency (e.g. 40)
+%   do_ica  : true / false (whether to run ICA cleaning)
+%
+% Outputs
+%   gfp_peaks : indices of GFP peaks
+%   gfp_curve : GFP time series
+%   EEG       : cleaned EEG (important!)
+
+    if nargin < 4
+        do_ica = false;
+    end
+    %% --------------------------------------------------
+    % 3. Average reference (MANDATORY for microstates)
+    %% --------------------------------------------------
+    EEG = pop_reref(EEG, []);
+    EEG = eeg_checkset(EEG);
+    %% --------------------------------------------------
+    % 1. Band-pass filter (EEGLAB FIR, zero-phase)
+    %% --------------------------------------------------
+    EEG = pop_eegfiltnew(EEG, l_freq, h_freq);
+    EEG = eeg_checkset(EEG);
+
+    %% --------------------------------------------------
+    % 2. Run ICA for artifact removal (OPTIONAL but recommended)
+    %% --------------------------------------------------
+    if do_ica
+        % Run ICA
+        EEG = pop_runica(EEG, 'extended', 1, 'stop', 1e-7);
+        EEG = eeg_checkset(EEG);
+
+        % Classify components
+        EEG = pop_iclabel(EEG, 'default');
+
+        % Reject non-brain components automatically
+        EEG = pop_icflag(EEG, ...
+            [ NaN NaN;    % Brain
+              0.9 1;      % Muscle
+              0.9 1;      % Eye
+              0.9 1;      % Heart
+              0.9 1;      % Line Noise
+              0.9 1;      % Channel Noise
+              NaN NaN ]); % Other
+
+        EEG = eeg_checkset(EEG);
+    end
+    %% --------------------------------------------------
+    % 4. GFP peaks on voltage data
+    %% --------------------------------------------------
+    data = double(EEG.data);   % channels × time
+
+    ms = microVARstates.microstates();
+    [gfp_peaks, gfp_curve] = ms.get_gfp_peaks(data);
+
+end
+
 function plot_microstate_maps(km_maps, EEG, subject_id, out_dir)
 
     figure('Visible','off');
@@ -75,6 +119,7 @@ function plot_microstate_maps(km_maps, EEG, subject_id, out_dir)
         [subject_id '_microstates_ABCD.png']));
     close;
 end
+
 function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT_DIR, N_STATES)
 
     subj_id = erase(setfile.name, '.set');
@@ -87,7 +132,8 @@ function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT
     data = double(EEG.data);  % channels × time
 
     %% --- GFP peaks ---
-    [gfp_peaks, ~] = preprocess_for_gfp_peaks(EEG, 1, 40);
+    [gfp_peaks, ~, EEG] = preprocess_for_gfp_peaks(EEG, 1, 40, true);
+    data = double(EEG.data);
 
     %% --- Microstate maps (sensor space) ---
     ms = microVARstates.microstates();
@@ -104,7 +150,7 @@ function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT
     %% --- Load Koenig templates ---
     templates = microVARstates.KoenigTemplates.load(N_STATES);
     
-    %% --- Match topomaps ---
+    %% --- Match topomaps (Nikola-style) ---
     ms = microVARstates.microstates();
 
     [attribution, corr] = ...
