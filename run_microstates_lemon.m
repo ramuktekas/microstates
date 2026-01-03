@@ -11,6 +11,8 @@ OUT_DIR      = './microstate_results_matlab';
 
 N_SUBJECTS = 1;
 N_STATES   = 4;
+SUBJECT_ID = 'sub-010272_EC';  % [] means random
+
 
 if ~exist(OUT_DIR, 'dir')
     mkdir(OUT_DIR);
@@ -102,7 +104,7 @@ function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT
     %% --- Load Koenig templates ---
     templates = microVARstates.KoenigTemplates.load(N_STATES);
     
-    %% --- Match topomaps (Nikola-style) ---
+    %% --- Match topomaps ---
     ms = microVARstates.microstates();
 
     [attribution, corr] = ...
@@ -127,14 +129,20 @@ end
 % RUN
 % =========================
 
-sets = load_lemon_subjects(LEMON_DIR, N_SUBJECTS);
+if ~isempty(SUBJECT_ID)
+    sets = dir(fullfile(LEMON_DIR, [SUBJECT_ID '.set']));
+    if isempty(sets)
+        error('Subject %s not found', SUBJECT_ID);
+    end
+else
+    sets = load_lemon_subjects(LEMON_DIR, N_SUBJECTS);
+end
 
 for i = 1:numel(sets)
-
     [km_maps, EEG, subj_id, out_dir] = ...
         process_subject(sets(i), OUT_DIR, N_STATES);
-
     plot_microstate_maps(km_maps, EEG, subj_id, out_dir);
 end
+
 
 disp('All subjects processed.');
