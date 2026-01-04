@@ -39,7 +39,7 @@ LEMON_DIR = Path("/store/projects/kumarsak/LEMON_data")
 TEMPLATE_FILE = Path("/home/kumarsak/micro-VAR-states/python/templates/Koenig2002.set")
 OUT_DIR = Path("./microstate_results")
 
-N_SUBJECTS = 1
+N_SUBJECTS = "all"
 N_STATES = 4
 RANDOM_SEED = 42
 
@@ -53,27 +53,20 @@ OUT_DIR.mkdir(exist_ok=True)
 # =========================
 
 def load_lemon_subjects(n_subjects):
-    """
-    Load n_subjects random LEMON EEGLAB .set files.
-
-    Parameters
-    ----------
-    n_subjects : int
-        Number of subjects to sample.
-
-    Returns
-    -------
-    list of Path
-        Paths to *_EC.set files.
-    """
     sets = sorted(LEMON_DIR.glob("*_EC.set"))
 
-    if len(sets) < n_subjects:
-        raise RuntimeError(
-            f"Requested {n_subjects} subjects, but only {len(sets)} found"
-        )
+    if n_subjects == "all":
+        return sets
 
-    return random.sample(sets, n_subjects)
+    if isinstance(n_subjects, int):
+        return sets[:n_subjects]
+
+    raise ValueError(
+        "n_subjects must be an integer or the string 'all'"
+    )
+
+
+
 
 
 
@@ -104,32 +97,99 @@ def load_koenig_templates_from_set(path, n_states):
 
     return maps, ch_names
 
+import numpy as np
+import mne
+
+from microstates import get_gfp_peaks
+
+
 def preprocess_for_gfp_peaks(
     raw,
     l_freq=1.0,
     h_freq=40.0,
-    use_hilbert=True,
+    do_ica=False,
+    random_state=42,
 ):
     """
-    Preprocess EEG only to compute GFP peaks.
-    Does NOT alter data used for microstate maps.
+    Classical EEGLAB-style preprocessing for microstates (Python version)
+
+    Parameters
+    ----------
+    raw : mne.io.Raw
+        Continuous EEG data
+    l_freq : float
+        Low cutoff frequency (Hz)
+    h_freq : float
+        High cutoff frequency (Hz)
+    do_ica : bool
+        Whether to run ICA cleaning
+    random_state : int
+        Random seed for ICA reproducibility
+
+    Returns
+    -------
+    gfp_peaks : np.ndarray
+        Indices of GFP peaks
+    gfp_curve : np.ndarray
+        GFP time series
+    raw : mne.io.Raw
+        Preprocessed EEG (important!)
     """
 
-    raw_filt = raw.copy().filter(
+    # --------------------------------------------------
+    # 1. Average reference (MANDATORY)
+    # --------------------------------------------------
+    raw = raw.copy().set_eeg_reference("average", projection=False)
+
+    # --------------------------------------------------
+    # 2. Band-pass filter (zero-phase FIR)
+    # --------------------------------------------------
+    raw.filter(
         l_freq=l_freq,
         h_freq=h_freq,
+        method="fir",
+        phase="zero",
         fir_design="firwin",
         verbose=False,
     )
 
-    if use_hilbert:
-        raw_filt.apply_hilbert(envelope=True)
+    # --------------------------------------------------
+    # 3. ICA cleaning (OPTIONAL)
+    # --------------------------------------------------
+    if do_ica:
+        ica = mne.preprocessing.ICA(
+            n_components=None,
+            method="fastica",
+            random_state=random_state,
+            max_iter="auto",
+        )
+        ica.fit(raw)
 
-    data = raw_filt.get_data()  # channels × time
+        # Try ICLabel-style classification (if available)
+        try:
+            labels = ica.get_components()
+            ic_labels = mne.preprocessing.iclabel.label_components(raw, ica)
+            bad_idx = np.where(
+                np.isin(
+                    ic_labels["labels"],
+                    ["eye", "muscle", "heart", "line_noise", "channel_noise"],
+                )
+            )[0]
+            ica.exclude = list(bad_idx)
+        except Exception:
+            # fallback: no automatic rejection
+            pass
+
+        raw = ica.apply(raw.copy())
+
+    # --------------------------------------------------
+    # 4. GFP peaks on voltage data (NO Hilbert!)
+    # --------------------------------------------------
+    data = raw.get_data()  # channels × time
 
     gfp_peaks, gfp_curve = get_gfp_peaks(data)
 
-    return gfp_peaks, gfp_curve
+    return gfp_peaks, gfp_curve, raw
 
 
 
@@ -179,16 +239,16 @@ def process_subject(set_path):
 
     # --- Load EEG ---
     raw = mne.io.read_raw_eeglab(set_path, preload=True, verbose=False)
-    data = raw.get_data()
+    
 
     # --- GFP peaks (preprocessing only for peak detection) ---
-    gfp_peaks, gfp_curve = preprocess_for_gfp_peaks(
+    gfp_peaks, gfp_curve, raw = preprocess_for_gfp_peaks(
         raw,
-        l_freq=1.0,
-        h_freq=40.0,
-        use_hilbert=True,
+        l_freq=1,
+        h_freq=40,
+        do_ica=True,   # set False if you want speed
     )
-
+    data = raw.get_data()
     # --- Microstate maps in SENSOR SPACE ---
     km_maps = run_modified_k_means(
         data[:, gfp_peaks],
@@ -230,12 +290,6 @@ def process_subject(set_path):
 # =========================
 # RUN
 # =========================
-def load_lemon_subjects(n):
-    sets = sorted(LEMON_DIR.glob("*_EC.set"))
-    if len(sets) < n:
-        raise RuntimeError("Not enough LEMON subjects")
-    return random.sample(sets, n)
-
 
 if __name__ == "__main__":
     subjects = load_lemon_subjects(N_SUBJECTS)
