@@ -9,9 +9,9 @@ rng(42);
 LEMON_DIR    = '/store/projects/kumarsak/LEMON_data';
 OUT_DIR      = './microstate_results_matlab';
 
-N_SUBJECTS = 1;
+N_SUBJECTS = 'all';
 N_STATES   = 4;
-SUBJECT_ID = 'sub-010272_EC';  % [] means random
+SUBJECT_ID =  ''; % [] means random
 
 
 if ~exist(OUT_DIR, 'dir')
@@ -19,17 +19,35 @@ if ~exist(OUT_DIR, 'dir')
 end
 
 function sets = load_lemon_subjects(lemon_dir, n_subjects)
+%LOAD_LEMON_SUBJECTS Load LEMON EEG .set files
+%
+% n_subjects:
+%   'all' → all subjects
+%   integer → first n subjects
 
     files = dir(fullfile(lemon_dir, '*_EC.set'));
 
-    if numel(files) < n_subjects
-        error('Requested %d subjects, but only %d found', ...
-              n_subjects, numel(files));
+    % sort deterministically
+    [~, idx] = sort({files.name});
+    files = files(idx);
+
+    if ischar(n_subjects) || isstring(n_subjects)
+        if strcmp(n_subjects, 'all')
+            sets = files;
+            return
+        else
+            error("n_subjects must be 'all' or an integer");
+        end
     end
 
-    idx  = randperm(numel(files), n_subjects);
-    sets = files(idx);
+    if isnumeric(n_subjects) && isscalar(n_subjects)
+        sets = files(1:min(n_subjects, numel(files)));
+        return
+    end
+
+    error("n_subjects must be 'all' or an integer");
 end
+
 function subject_maps = subject_maps_to_struct(km_maps, EEG)
     subject_maps.data     = km_maps;     % states × channels
     subject_maps.chanlocs = EEG.chanlocs;
@@ -128,6 +146,7 @@ function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT
     %% --- Load EEG ---
     EEG = pop_loadset('filename', setfile.name, ...
                       'filepath', setfile.folder);
+    disp(EEG.chanlocs(1).labels)
 
     data = double(EEG.data);  % channels × time
 
@@ -149,12 +168,15 @@ function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT
 
     %% --- Load Koenig templates ---
     templates = microVARstates.KoenigTemplates.load(N_STATES);
+    templates.chanlocs(1).labels
+
     
     %% --- Match topomaps (Nikola-style) ---
     ms = microVARstates.microstates();
 
-    [attribution, corr] = ...
-        ms.match_topomaps_per_template(subject_maps.data.', templates)
+    [attribution, corr] = ms.match_topomaps_per_template( ...
+        subject_maps.data.', subject_maps.chanlocs, templates);
+
 
 
     %% --- Apply permutation ---
