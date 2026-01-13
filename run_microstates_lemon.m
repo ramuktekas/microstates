@@ -5,9 +5,15 @@
 addpath('/home/kumarsak/micro-VAR-states/matlab');
 
 rng(42);
+% --- EEGLAB + SIFT ---
+addpath('/home/kumarsak/eeglab2025.1.0');
+eeglab nogui;
+
+addpath(genpath('/home/kumarsak/eeglab2025.1.0/plugins/SIFT'));
+addpath(genpath('/home/kumarsak/VAR-Toolbox/v3dot0/'))
 
 LEMON_DIR    = '/store/projects/kumarsak/LEMON_data';
-OUT_DIR      = './microstate_results_matlab';
+OUT_DIR      = './microstate_results_matlab_var';
 
 N_SUBJECTS = 'all';
 N_STATES   = 4;
@@ -71,15 +77,16 @@ function [gfp_peaks, gfp_curve, EEG] = preprocess_for_gfp_peaks(EEG, l_freq, h_f
     if nargin < 4
         do_ica = false;
     end
+
+    %% --------------------------------------------------
+    % 1. Band-pass filter (EEGLAB FIR, zero-phase)
+    %% -------------------------------------------------
+    EEG = pop_eegfiltnew(EEG, l_freq, h_freq);
+    EEG = eeg_checkset(EEG);
     %% --------------------------------------------------
     % 3. Average reference (MANDATORY for microstates)
     %% --------------------------------------------------
     EEG = pop_reref(EEG, []);
-    EEG = eeg_checkset(EEG);
-    %% --------------------------------------------------
-    % 1. Band-pass filter (EEGLAB FIR, zero-phase)
-    %% --------------------------------------------------
-    EEG = pop_eegfiltnew(EEG, l_freq, h_freq);
     EEG = eeg_checkset(EEG);
 
     %% --------------------------------------------------
@@ -138,48 +145,61 @@ function plot_microstate_maps(km_maps, EEG, subject_id, out_dir)
     close;
 end
 
-function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT_DIR, N_STATES)
+function p_opt = estimate_var_order(setfile)
+
+    EEG = pop_loadset('filename', setfile.name, ...
+                      'filepath', setfile.folder);
+
+    % same preprocessing as main pipeline
+    [~, ~, EEG] = preprocess_for_gfp_peaks(EEG, 1, 40, false);
+
+    data = double(EEG.data);
+
+    varModel = microVARstates.VAR();
+
+    % IMPORTANT: use limited p_max
+    p_max = 10;
+    [p_opt, ~] = varModel.select_order(data, p_max);
+
+end
+function [km_maps_labeled, EEG, subj_id, out_dir] = ...
+    process_subject_fixed_p(setfile, OUT_DIR, N_STATES, p_fixed)
 
     subj_id = erase(setfile.name, '.set');
-    fprintf('\n=== Processing %s ===\n', subj_id);
+    fprintf('\n=== Processing %s (p = %d) ===\n', subj_id, p_fixed);
 
     %% --- Load EEG ---
     EEG = pop_loadset('filename', setfile.name, ...
                       'filepath', setfile.folder);
-    disp(EEG.chanlocs(1).labels)
 
-    data = double(EEG.data);  % channels × time
-
-    %% --- GFP peaks ---
-    [gfp_peaks, ~, EEG] = preprocess_for_gfp_peaks(EEG, 1, 40, true);
+    %% --- Preprocessing ---
+    [~, ~, EEG] = preprocess_for_gfp_peaks(EEG, 1, 40, false);
     data = double(EEG.data);
 
-    %% --- Microstate maps (sensor space) ---
+    %% --- VAR with fixed order ---
+    varModel = microVARstates.VAR();
+
+    model = varModel.fit(data, p_fixed);
+
+    Tvar = 3600 * EEG.srate;
+    data_sim = varModel.simulate(model, Tvar);
+
+    %% --- Microstates on VAR data ---
     ms = microVARstates.microstates();
+
+    [gfp_peaks_var, ~] = ms.get_gfp_peaks(data_sim);
 
     km_maps = ms.run_modified_k_means( ...
-        data(:, gfp_peaks), ...
+        data_sim(:, gfp_peaks_var), ...
         N_STATES);
 
-    % km_maps: states × channels
-
-    %% --- Wrap subject maps ---
+    %% --- Template matching ---
     subject_maps = subject_maps_to_struct(km_maps, EEG);
-
-    %% --- Load Koenig templates ---
     templates = microVARstates.KoenigTemplates.load(N_STATES);
-    templates.chanlocs(1).labels
-
-    
-    %% --- Match topomaps (Nikola-style) ---
-    ms = microVARstates.microstates();
 
     [attribution, corr] = ms.match_topomaps_per_template( ...
         subject_maps.data.', subject_maps.chanlocs, templates);
 
-
-
-    %% --- Apply permutation ---
     km_maps_labeled = km_maps(attribution, :);
 
     %% --- Save ---
@@ -188,10 +208,12 @@ function [km_maps_labeled, EEG, subj_id, out_dir] = process_subject(setfile, OUT
         mkdir(out_dir);
     end
 
-    save(fullfile(out_dir,'km_maps.mat'), 'km_maps');
-    save(fullfile(out_dir,'km_maps_labeled.mat'), 'km_maps_labeled');
-    save(fullfile(out_dir,'microstate_permutation.mat'), 'attribution');
-    save(fullfile(out_dir,'template_correlations.mat'), 'corr');
+    save(fullfile(out_dir,'var_model.mat'), 'model');
+    save(fullfile(out_dir,'var_p_fixed.mat'), 'p_fixed');
+    save(fullfile(out_dir,'var_km_maps.mat'), 'km_maps');
+    save(fullfile(out_dir,'var_km_maps_labeled.mat'), 'km_maps_labeled');
+    save(fullfile(out_dir,'var_permutation.mat'), 'attribution');
+
 end
 %% =========================
 % RUN
@@ -206,11 +228,30 @@ else
     sets = load_lemon_subjects(LEMON_DIR, N_SUBJECTS);
 end
 
-for i = 1:numel(sets)
-    [km_maps, EEG, subj_id, out_dir] = ...
-        process_subject(sets(i), OUT_DIR, N_STATES);
-    plot_microstate_maps(km_maps, EEG, subj_id, out_dir);
+nSubj = numel(sets);
+p_opts = zeros(nSubj,1);
+
+%% ---------- PASS 1: estimate p for each subject ----------
+fprintf('\n=== Estimating VAR order per subject ===\n');
+
+for i = 1:nSubj
+    p_opts(i) = estimate_var_order(sets(i));
+    fprintf('Subject %d: p_opt = %d\n', i, p_opts(i));
 end
 
+p_med = median(p_opts);
+fprintf('\n>>> Median VAR order across subjects: p = %d <<<\n', p_med);
+
+save(fullfile(OUT_DIR,'var_popts_all_subjects.mat'), 'p_opts', 'p_med');
+
+%% ---------- PASS 2: full pipeline using fixed p ----------
+fprintf('\n=== Running full VAR + microstates with fixed p ===\n');
+
+for i = 1:nSubj
+    [km_maps, EEG, subj_id, out_dir] = ...
+        process_subject_fixed_p(sets(i), OUT_DIR, N_STATES, p_med);
+
+    plot_microstate_maps(km_maps, EEG, subj_id, out_dir);
+end
 
 disp('All subjects processed.');
