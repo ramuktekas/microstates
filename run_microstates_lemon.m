@@ -17,7 +17,7 @@ OUT_DIR      = './microstate_results_matlab_var';
 
 N_SUBJECTS = 1;
 N_STATES   = 4;
-SUBJECT_ID =  ''; % [] means random
+SUBJECT_ID =  'sub-010016_EC'; % [] means random
 
 
 if ~exist(OUT_DIR, 'dir')
@@ -303,7 +303,12 @@ function write_diagnostics_summary(filename, diagnostics)
         fprintf(fid, 'Original max eigenvalue: %.6f\n', diagnostics.var_fit.max_eig_original);
         fprintf(fid, 'Final max eigenvalue: %.6f\n', diagnostics.var_fit.max_eig_final);
         fprintf(fid, 'Rescale iterations: %d\n', diagnostics.var_fit.rescale_iterations);
-        fprintf(fid, 'Stabilized: %d\n\n', diagnostics.var_fit.stabilized);
+        if isfield(diagnostics.var_fit, 'stabilized')
+            fprintf(fid, 'Stabilized: %d\n\n', diagnostics.var_fit.stabilized);
+        else
+            fprintf(fid, 'Stabilized: 0\n\n');
+        end
+
     end
     
     if isfield(diagnostics, 'var_simulation')
