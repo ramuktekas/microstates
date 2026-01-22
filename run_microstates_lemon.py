@@ -33,7 +33,9 @@ OUT_DIR = Path("./microstate_results_python_var")
 N_SUBJECTS = 1
 N_STATES = 4
 RANDOM_SEED = 42
-
+SUBJECT_ID = "sub-010016_EC"  
+# "" or None → behave like now
+# e.g. "sub-010002_EC" → run only this subject
 np.random.seed(RANDOM_SEED)
 OUT_DIR.mkdir(exist_ok=True)
 
@@ -437,55 +439,66 @@ def write_diagnostics_summary(filename, diagnostics):
 
 if __name__ == "__main__":
     # Load subjects
-    sets = load_lemon_subjects(LEMON_DIR, N_SUBJECTS)
+    # Load subjects
+    if SUBJECT_ID is None or SUBJECT_ID == "":
+        # MATLAB: SUBJECT_ID = []
+        sets = load_lemon_subjects(LEMON_DIR, N_SUBJECTS)
+    else:
+        # MATLAB: SUBJECT_ID specified
+        set_path = LEMON_DIR / f"{SUBJECT_ID}.set"
+        if not set_path.exists():
+            raise FileNotFoundError(f"Subject not found: {set_path}")
+        sets = [set_path]
+
     nSubj = len(sets)
 
-    # ---------- PASS 1: estimate p for each subject ----------
-    print("\n=== Estimating VAR order per subject ===")
 
-    p_opts = []
+    # # ---------- PASS 1: estimate p for each subject ----------
+    # print("\n=== Estimating VAR order per subject ===")
 
-    for i, set_path in enumerate(sets):
-        # Get p_opt, AIC values, AND diagnostics
-        p_opt, aic_vals, order_diagnostics = estimate_var_order(set_path)
-        p_opts.append(p_opt)
+    # p_opts = []
 
-        # Get subject ID
-        subj_id = set_path.stem
+    # for i, set_path in enumerate(sets):
+    #     # Get p_opt, AIC values, AND diagnostics
+    #     p_opt, aic_vals, order_diagnostics = estimate_var_order(set_path)
+    #     p_opts.append(p_opt)
 
-        # Create output directory
-        out_dir = OUT_DIR / subj_id
-        out_dir.mkdir(exist_ok=True, parents=True)
+    #     # Get subject ID
+    #     subj_id = set_path.stem
 
-        # Save AIC values, optimal p, AND diagnostics
-        np.save(out_dir / "var_aic.npy", aic_vals)
-        np.save(out_dir / "var_p_opt.npy", p_opt)
-        np.save(out_dir / "var_order_selection_diagnostics.npy", order_diagnostics, allow_pickle=True)
+    #     # Create output directory
+    #     out_dir = OUT_DIR / subj_id
+    #     out_dir.mkdir(exist_ok=True, parents=True)
 
-        print(f"Subject {i + 1} ({subj_id}): p_opt = {p_opt}")
+    #     # Save AIC values, optimal p, AND diagnostics
+    #     np.save(out_dir / "var_aic.npy", aic_vals)
+    #     np.save(out_dir / "var_p_opt.npy", p_opt)
+    #     np.save(out_dir / "var_order_selection_diagnostics.npy", order_diagnostics, allow_pickle=True)
 
-    p_med = int(np.median(p_opts))
-    print(f"\n>>> Median VAR order across subjects: p = {p_med} <<<")
+    #     print(f"Subject {i + 1} ({subj_id}): p_opt = {p_opt}")
 
-    np.save(OUT_DIR / "var_popts_all_subjects.npy", p_opts)
-    np.save(OUT_DIR / "var_p_median.npy", p_med)
+    # p_med = int(np.median(p_opts))
+    # print(f"\n>>> Median VAR order across subjects: p = {p_med} <<<")
 
-    # ---------- PASS 2: full pipeline using fixed p ----------
-    print("\n=== Running full VAR + microstates with fixed p ===")
+    # np.save(OUT_DIR / "var_popts_all_subjects.npy", p_opts)
+    # np.save(OUT_DIR / "var_p_median.npy", p_med)
 
-    all_diagnostics = []
+    # # ---------- PASS 2: full pipeline using fixed p ----------
+    # print("\n=== Running full VAR + microstates with fixed p ===")
+
+    # all_diagnostics = []
 
     for i, set_path in enumerate(sets):
         km_maps, info, subj_id, out_dir, diagnostics = process_subject_fixed_p(
-            set_path, OUT_DIR, N_STATES, p_med
+            set_path, OUT_DIR, N_STATES, 4
         )
 
         plot_microstate_maps(km_maps, info, subj_id, out_dir)
 
         # Store diagnostics for aggregation
-        all_diagnostics.append(diagnostics)
+        # all_diagnostics.append(diagnostics)
 
     # Save aggregated diagnostics across all subjects
-    np.save(OUT_DIR / "all_subjects_diagnostics.npy", all_diagnostics, allow_pickle=True)
+    # np.save(OUT_DIR / "all_subjects_diagnostics.npy", all_diagnostics, allow_pickle=True)
 
     print("\nAll subjects processed.")
