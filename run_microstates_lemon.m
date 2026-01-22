@@ -10,14 +10,14 @@ addpath('/home/kumarsak/eeglab2025.1.0');
 eeglab nogui;
 
 addpath(genpath('/home/kumarsak/eeglab2025.1.0/plugins/SIFT'));
-addpath(genpath('/home/kumarsak/VAR-Toolbox/v3dot0/'))
+% addpath(genpath('/home/kumarsak/VAR-Toolbox/v3dot0/'))
 
 LEMON_DIR    = '/store/projects/kumarsak/LEMON_data';
 OUT_DIR      = './microstate_results_matlab_var';
 
 N_SUBJECTS = 1;
 N_STATES   = 4;
-SUBJECT_ID =  'sub-010016_EC'; % [] means random
+SUBJECT_ID =  'sub-010006_EC'; % [] means random
 
 
 if ~exist(OUT_DIR, 'dir')
@@ -345,6 +345,23 @@ end
 % =========================
 
 % In your main script, update the loops like this:
+%% =========================
+% LOAD SUBJECTS (THIS WAS MISSING)
+% =========================
+
+if ~isempty(SUBJECT_ID)
+    % Load exactly one subject
+    sets = dir(fullfile(LEMON_DIR, [SUBJECT_ID '.set']));
+    if isempty(sets)
+        error('Subject not found: %s', SUBJECT_ID);
+    end
+else
+    % Load first N subjects
+    sets = load_lemon_subjects(LEMON_DIR, N_SUBJECTS);
+end
+
+nSubj = numel(sets);
+
 
 %% ---------- PASS 1: estimate p for each subject ----------
 fprintf('\n=== Estimating VAR order per subject ===\n');
@@ -382,7 +399,7 @@ all_diagnostics = cell(nSubj, 1);
 
 for i = 1:nSubj
     [km_maps, EEG, subj_id, out_dir, diagnostics] = ...
-        process_subject_fixed_p(sets(i), OUT_DIR, N_STATES, p_med);
+        process_subject_fixed_p(sets(i), OUT_DIR, N_STATES, 10);
 
     plot_microstate_maps(km_maps, EEG, subj_id, out_dir);
     
